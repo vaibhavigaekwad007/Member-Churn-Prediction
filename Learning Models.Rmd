@@ -1,0 +1,813 @@
+---
+title: "DM_Models"
+author: "Group 5"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r}
+#load the packages
+library(readr)
+library(readxl)
+library(forecast)
+library(tidyverse)
+library(caret)
+library(e1071)
+library(data.table)
+library(randomForest)
+library(leaps)
+library(MASS)
+library(corrplot)
+library(gridExtra)
+library(formattable)
+library(outliers)
+library(rpivotTable)
+library(InformationValue)
+library(ROCR)
+library(rpart)
+library(rpart.plot)
+library(FNN)
+```
+
+```{r}
+#upload the target dataset
+churn_data <- read_csv("~/Desktop/MBRChurnModel_FirstYear_MSK (1).csv")
+
+#check the missing values
+sapply(churn_data, function(x) sum(is.na(x)))
+
+head(churn_data)
+str(churn_data)
+
+#check the duplicated ID column
+#churn_data <-churn_data[!duplicated(churn_data$A2ACCIPK), ]
+#this dataset is the combination of multiple datasets with unique customer ID 
+
+```
+
+
+```{r}
+#Correlation between numeric variables
+numeric_var <- sapply(churn_data, is.numeric)
+matrix <- cor(churn_data[,numeric_var])
+
+corrplot(matrix,main="\n\nCorrelation Plot for Numerical Variables", method="number")
+
+```
+From the correlation plot, we can see that:
+B2B and A2A are correlated;(0.86)
+Shop1yr and shop6m are correlated;(0.96)
+Shop1yr and shop3m are correlated ;(0.93)
+shop6m and shop3m are correlated;(0.97)
+
+```{r}
+#get the numerical variables
+numeric_var <- sapply(churn_data, is.numeric)
+
+#round the numerical variables in two decimals
+mynew03 <- churn_data %>% mutate_if(is.numeric, ~round(., 2))
+
+# drop the irrelevant columns ( member No.)
+mynew04 <- mynew03[,-2]
+
+# drop the highly related columns 
+mynew04$A2ACCTYP <- NULL
+mynew04$SHOP6M <- NULL
+mynew04$SHOP3M <- NULL
+
+mynew04$RENEW <- ifelse(mynew04$RENEW == "Y", 1, 0)
+mynew04$RENEW <- factor(mynew04$RENEW, levels = c(0, 1))
+str(mynew04)
+```
+
+```{r}
+#deal with the outliers
+#get the numerical variables
+numeric_var <- sapply(mynew04, is.numeric)
+
+#get the mean, max, min for numerical varianles columns from the dataframe
+colMeans(mynew04[numeric_var])
+sapply(mynew04[numeric_var],max)
+sapply(mynew04[numeric_var],min)
+```
+
+```{r}
+p1 <- ggplot(mynew04, aes(x = "SHOP1YR", y = SHOP1YR)) +
+    geom_boxplot()
+
+p2<-ggplot(mynew04, aes(x = "EARLYFAREWELL", y = EARLYFAREWELL)) +
+    geom_boxplot()
+p3 <- ggplot(churn_data, aes(x = "AGE", y = AGE)) +
+    geom_boxplot()
+p4 <- ggplot(churn_data, aes(x = "TENURE", y = TENURE)) +
+    geom_boxplot()
+
+p5 <- ggplot(churn_data, aes(x = "MBRCOUNT", y = MBRCOUNT)) +
+    geom_boxplot()
+
+grid.arrange(p1,p2,p3,p4,p5)
+```
+we removes outliers when:
+we don't have a lot of time to figure out why you have outliers
+we have a large amount of data without outliers
+we have outliers due to measurement or data entry errors
+```{r}
+#One way to identify outliers is to determine which points have a z-score that's far from 0. 
+#We can use the scores() function in the outliers package
+#identify which roes contain outliers (SHOP1YR)
+library(outliers)
+# get the z-scores for 
+outlier_scores_1YR <- scores(mynew04$SHOP1YR)
+
+#use threshold =3
+#it is "TRUE" if outlier_scores is greater than 3
+# it is false if outlier_scores is less than negative 3
+is_outlier1YR <- outlier_scores_1YR > 3 | outlier_scores_1YR < -3
+
+# add a column with info whether the refund_value is an outlier
+mynew04$is_outlier <- is_outlier1YR
+
+# create a dataframe with only outliers
+churn_outliers_1YR <- mynew04[outlier_scores_1YR > 3| outlier_scores_1YR < -3, ]
+str(churn_outliers_1YR)
+
+#Remove rows with outliers from churn dataset
+churn_clean1<- mynew04[mynew04$is_outlier== F, ]
+churn_clean1$is_outlier <- NULL
+str(churn_clean1)
+
+```
+
+```{r}
+#encode the response variable into a factor variable of 1 and 0
+churn_clean1$RENEW <- as.numeric(churn_clean1$RENEW)
+str(churn_clean1)
+
+library(rpivotTable) 
+#Categorical variables (M2EXCFLG,F2HOMRGN,HOMEFCTYCHANGE,RECENTMOVING)
+rpivotTable(churn_clean1, cols=c("M2EXCFLG"),vals = "RENEW", aggregatorName = "Average", width="100%", height="400px")
+#E=1.53 & N= 1.33
+
+#F2HOMRGN
+#BO=1.17 
+#TE=1.39
+#(1.4-1.45):BD, NE,NW,SD,SE
+#(1.46-1.5): BA; MW;LA
+
+#HOMEFCTYCHANGE
+#N=1.41 & Y=1.51
+
+#RECENTMOVING)
+#N=1.43 & Y=1.44
+
+#deal with the region column
+churn_clean1$F2HOMRGN_BO<- churn_clean1$F2HOMRGN %in% c("BO")
+churn_clean1$F2HOMRGN_TE<- churn_clean1$F2HOMRGN %in% c("TE")
+churn_clean1$F2HOMRGN_middle<- churn_clean1$F2HOMRGN %in% c("BD","NE","NW","SD","SE")
+churn_clean1$F2HOMRGN_high<- churn_clean1$F2HOMRGN %in% c("BA","LA","MW")
+    
+```
+          BA	BD   	BO  	LA	  MW	  NE    	NW	SD	SE	TE	Totals
+      	1.48	1.42	1.17	1.46	1.48	1.43	1.45	1.44	1.41	1.39	1.44
+
+```{r}
+#Convert characters to binary factors
+library(caret)
+dmy <- dummyVars(" ~ .", data = churn_clean1[c(2,12,13,19:22)])
+trsf <- data.frame(predict(dmy, newdata = churn_clean1))
+churn_clean1 <- data.frame(c(churn_clean1,trsf))
+
+#get the dataset for model processing
+mynew05<- churn_clean1[,c(1,3,5:11,14:18,23:36)]
+mynew05$RENEW <- as.factor(mynew05$RENEW)
+
+mynew05$RENEW <- ifelse(mynew05$RENEW == "2", 1, 0)
+mynew05$RENEW <- as.factor(mynew05$RENEW)
+str(mynew05)
+```
+
+
+```{r}
+# we need to make sure the training data has approximately equal proportion of class
+table(mynew05$RENEW)
+
+#set up the traing and testing dataset
+set.seed(500)
+index <- createDataPartition(mynew05$RENEW, p = 0.7, list = FALSE)
+mytrain_data <- mynew05[index, ]
+mytest_data  <- mynew05[-index, ]
+
+table(mytrain_data$RENEW)
+table(mytest_data$RENEW)
+```
+
+
+
+
+```{r}
+#logistic regression model
+#train the model
+set.seed(111)
+logitmodel <- glm(RENEW ~.,family=binomial(link="logit"), data=mytrain_data)
+summary(logitmodel)
+
+#predict the churn posibility
+logpred_prob <- predict(logitmodel, newdata = mytest_data,type = "response") 
+
+#show the confusion matrix
+#evaluate the accuracy
+caret::confusionMatrix(as.factor(ifelse(logpred_prob> 0.5, 1, 0)), mytest_data$RENEW)
+#the model accuracy is 0.7086
+```
+
+```{r}
+#The InformationValue::optimalCutoff function provides ways to find the optimal cutoff to improve the prediction
+library(InformationValue)
+predicted <- predict(logitmodel, mytest_data,  type="response")  
+optimalCutoff(mytest_data$RENEW, predicted)[1] 
+```
+
+
+```{r}
+#look at the ROC curve and the AUC value
+library(ROCR)
+pr <- prediction(logpred_prob, mytest_data$RENEW)
+# plotting ROC curve
+prf <- performance(pr, measure = "tpr", x.measure = "fpr")
+plot(prf,main = "ROC Curve",col = 2,lwd = 2)
+abline(a = 0,b = 1,lwd = 2,lty = 3,col = "black")
+
+# AUC value
+#AUC stands for "Area under the ROC Curve
+auc <- performance(pr, measure = "auc")
+auc <- auc@y.values[[1]]
+auc
+# the auc value is 0.776, which represents the quality of the model's predictions irrespective of what classification threshold is chosen.
+#the larger the area under the ROC curve, the better is your model
+```
+
+```{r}
+#we need to do feature selections to tune the model to get the higer model accuracy
+#A good feature is when we can distinguish between churn and non-churn customers
+set.seed(111)
+library(MASS)
+fit_1 <- glm(RENEW ~., family=binomial(link="logit"), data=mytrain_data)
+step <-stepAIC(fit_1, trace=FALSE,direction = "both")
+step$anova
+summary(step)
+```
+
+```{r}
+#train the model after the features selection
+set.seed(111)
+logitmodel01 <- glm(RENEW ~ F2HOMFCY + AGE + TENURE + DISTANCE + EARLYFAREWELL + 
+    SHOP1YR + ECOMSHOP + GASSHOP + MEDICALSHOP + GROCERYSHOP + 
+    M2EXCFLGE + HOMEFCTYCHANGEN + RECENTMOVINGN + F2HOMRGN_BOFALSE + 
+    F2HOMRGN_TEFALSE + F2HOMRGN_middleFALSE,family=binomial(link="logit"), data=mytrain_data)
+
+summary(logitmodel01)
+
+library(caret)
+#predict the churn posibility
+logpred_prob01 <- predict(logitmodel01, newdata = mytest_data, type = "response") 
+
+#evaluate the accuracy
+caret::confusionMatrix(factor(ifelse(logpred_prob01> 0.5, 1, 0)), mytest_data$RENEW)
+#the model accuracy is 0.7085
+
+
+```
+
+```{r}
+#look at the ROC curve and the AUC value
+library(ROCR)
+pr <- prediction(logpred_prob01, mytest_data$RENEW)
+# plotting ROC curve
+prf <- performance(pr, measure = "tpr", x.measure = "fpr")
+plot(prf,main = "ROC Curve",col = 2,lwd = 2)
+abline(a = 0,b = 1,lwd = 2,lty = 3,col = "black")
+
+# AUC value
+#AUC stands for "Area under the ROC Curve
+auc <- performance(pr, measure = "auc")
+auc <- auc@y.values[[1]]
+auc
+#auc=0.776
+```
+
+
+```{r}
+# classification tree
+#unpruned tree
+library(rpart)
+library(rpart.plot)
+
+#The minbucket provides the smallest number of observations that are allowed in a terminal node
+#The minsplit parameter is the smallest number of observations in the parent node that could be split further
+#the maxdepth parameter prevents the tree from growing past a certain depth / height
+#cp: the minimum improvement in the model needed at each node
+set.seed(1050)
+class.tree <- rpart(RENEW ~., data=mytrain_data,
+                    control = rpart.control(minbucket =7,minsplit=20,cp=0.001), method = "class")
+printcp(class.tree)
+# plot tree
+prp(class.tree,type = 1,extra = 1, under = TRUE, split.font = 2,varlen = -10, box.palette="pink")
+
+#get the rule
+rpart.rules(class.tree)
+
+#get the importance 
+t(t(class.tree$variable.importance))
+
+#prediction
+pred_tree<- predict(class.tree, newdata = mytest_data,type="class")
+pred_prob <- predict(class.tree, newdata = mytest_data,type="prob")
+
+#evaluation
+caret::confusionMatrix(pred_tree,mytest_data$RENEW)
+#accuracy=0.7087
+```
+
+
+```{r}
+# classification tree
+#pruned tree
+set.seed(1050)
+ct <- rpart(RENEW ~., data=mytrain_data,, control = rpart.control(minbucket =7,minsplit=20), method = "class")
+
+# prune by lower cp
+#returns the optimal cp value associated with the minimum error.
+pruned.ct <- prune(ct,
+                   cp = ct$cptable[which.min(ct$cptable[,"xerror"]),"CP"])
+# plot tree
+prp(pruned.ct, type = 1, extra = 1, split.font = 1, varlen = -10, box.palette="pink")
+#get the rule
+rpart.rules(pruned.ct)
+
+#get the importance 
+t(t(ct$variable.importance))
+
+#prediction
+pred_tree01<- predict(ct, newdata = mytest_data,type="class")
+pred_prob <- predict(ct, newdata = mytest_data,type="prob")
+
+#evaluation
+caret::confusionMatrix(pred_tree01 ,mytest_data$RENEW)
+#accuracy=0.7026
+
+```
+
+
+```{r}
+#look at the ROC curve and the AUC value
+library(ROCR)
+pr <- prediction(pred_prob[,2], mytest_data$RENEW)
+# plotting ROC curve
+prf <- performance(pr, measure = "tpr", x.measure = "fpr")
+plot(prf,main = "ROC Curve",col = 2,lwd = 2)
+abline(a = 0,b = 1,lwd = 2,lty = 3,col = "black")
+
+# AUC value
+#AUC stands for "Area under the ROC Curve
+auc <- performance(pr, measure = "auc")
+auc <- auc@y.values[[1]]
+auc
+#auc=0.7309
+```
+
+
+```{r}
+#Random Forest
+#build the model
+rfModel <- randomForest(RENEW ~., data=mytrain_data)
+
+#We use this plot to help us determine the number of trees
+plot(rfModel)
+summary(rfModel)
+print(rfModel)
+
+## to look at variable importance
+varImpPlot(rfModel,sort=T, n.var = 10, main = 'Top 10 Feature Importance') 
+
+#prediction 
+pred_rf <- predict(rfModel, newdata = mytest_data)
+pred_prob <- predict(rfModel, newdata = mytest_data,type="prob")
+
+#confusion matrix for prediction
+caret::confusionMatrix(pred_rf,mytest_data$RENEW)
+
+#Accuracy = (True Negatives + True Positives)/ Total records
+
+```
+
+
+```{r}
+#look at the ROC curve and the AUC value
+library(ROCR)
+pr <- prediction(pred_prob[,2], mytest_data$RENEW)
+# plotting ROC curve
+prf <- performance(pr, measure = "tpr", x.measure = "fpr")
+plot(prf,main = "ROC Curve",col = 2,lwd = 2)
+abline(a = 0,b = 1,lwd = 2,lty = 3,col = "black")
+
+# AUC value
+#AUC stands for "Area under the ROC Curve
+auc <- performance(pr, measure = "auc")
+auc <- auc@y.values[[1]]
+auc
+#auc=0.8286
+```
+
+
+```{r}
+#tune the random forest model
+#we tune the model by selecting the number of trees, conducting feature selection; minimize the OOB error
+a <- mytrain_data[, -1] 
+b <- mytrain_data$RENEW
+
+t <- tuneRF(a, b, stepFactor = 0.5, plot = TRUE,
+            ntreeTry =180, trace = TRUE, improve = 0.05)
+
+##m(try)=10 when tree=100 #accuracy=0.7511 OOB error = 25.3%
+##m(try)=10 when tree=150 #accuracy=0.7521 OOB error = 25.1%
+##m(try)=10 when tree=180 #accuracy=0.7525 OOB error = 24.9%
+##m(try)=10 when tree=185 #accuracy=0.7523 OOB error = 24.9%
+##m(try)=10 when tree=200 #accuracy=0.7519 OOB error = 24.9%
+
+```
+
+```{r}
+#run the Random Forest model after tuning
+set.seed(100)
+rfModel_new <- randomForest(RENEW ~., data=mytrain_data, ntree = 180,
+                            mtry = 10, importance = TRUE)
+print(rfModel_new)
+plot(rfModel_new)
+summary(rfModel_new)
+
+```
+
+
+```{r}
+#prediction 
+pred_rf <- predict(rfModel_new, newdata = mytest_data)
+pred_prob <- predict(rfModel_new, newdata = mytest_data,type="prob")
+
+#confusion matrix for prediction
+caret::confusionMatrix(pred_rf,mytest_data$RENEW)
+
+varImpPlot(rfModel_new, sort=T, n.var = 10, main = 'Top 10 Feature Importance')
+```
+
+
+
+```{r}
+#look at the ROC curve and the AUC value
+library(ROCR)
+pr <- prediction(pred_prob[,2], mytest_data$RENEW)
+# plotting ROC curve
+prf <- performance(pr, measure = "tpr", x.measure = "fpr")
+plot(prf,main = "ROC Curve",col = 2,lwd = 2)
+abline(a = 0,b = 1,lwd = 2,lty = 3,col = "black")
+
+# AUC value
+#AUC stands for "Area under the ROC Curve
+auc <- performance(pr, measure = "auc")
+auc <- auc@y.values[[1]]
+auc
+#auc=0.8321
+```
+
+
+```{r}
+#KNN
+#Based on the DT importance, we use that sub-dataset of 10 features for KNN
+newsubset <- mynew05[,c("RENEW","EARLYFAREWELL","SHOP1YR","DISTANCE","GASSHOP","MEDICALSHOP","AGE","GROCERYSHOP",
+"ECOMSHOP","M2EXCFLGE","M2EXCFLGN")]
+str(newsubset)
+
+#load and partition the dataset: training (70%) and validation (30%) sets
+
+set.seed(105)
+indexknn<- sample(1:nrow(newsubset),size=nrow(newsubset)*0.7,replace = FALSE) 
+train_knn<- newsubset[indexknn,] # 70% training data
+test_knn<- newsubset[-indexknn,]
+
+#create the separate dataframe
+train_knn_pl<- newsubset[indexknn,1]
+
+# initialize normalized training, validation data, complete data frames to originals
+train.norm.df <- train_knn
+valid.norm.df <- test_knn
+
+# use preProcess() from the caret package to normalize features
+norm.values <- preProcess(train_knn[, -1], method=c("center", "scale"))
+
+train.norm.df[, -1] <- predict(norm.values, train_knn[, -1])
+valid.norm.df[, -1] <- predict(norm.values, test_knn[, -1])
+
+```
+
+
+```{r}
+#KNN
+#compute knn for different k on validation to find the best k
+# initialize a data frame with two columns: k, and accuracy
+library(class)
+set.seed(105)
+cl <- train_knn_pl
+
+i=1                          
+k.optm=1                     
+for (i in 30:60){ 
+    knn.mod <-  knn(train=train.norm.df[,-1], test=valid.norm.df[, -1], cl, k=i)
+    k.optm[i] <- 100 * sum(knn.mod == test_knn$RENEW)/NROW(test_knn$RENEW)
+    k=i  
+    cat(k,'=',k.optm[i],'\n')
+}
+
+```
+
+
+```{r}
+library(FNN)
+set.seed(105)
+cl <- train_knn_pl
+#the best k=53, with the highest accuracy
+knn.53 <- knn(train=train.norm.df[,-1], test=valid.norm.df[, -1], cl, k=53,prob=TRUE)
+
+#show the confusion matrix for the validation data
+library(caret)
+caret::confusionMatrix(knn.53,valid.norm.df$RENEW)
+#accuracy=0.7039
+
+
+```
+
+
+```{r}
+#look at the ROC curve and the AUC value
+library(ROCR)
+pr <- prediction(as.numeric(knn.53), valid.norm.df$RENEW)
+# plotting ROC curve
+prf <- performance(pr, measure = "tpr", x.measure = "fpr")
+plot(prf,main = "ROC Curve",col = 2,lwd = 2)
+abline(a = 0,b = 1,lwd = 2,lty = 3,col = "black")
+
+# AUC value
+#AUC stands for "Area under the ROC Curve
+auc <- performance(pr, measure = "auc")
+auc <- auc@y.values[[1]]
+auc
+#auc=0.6960
+```
+
+
+```{r}
+#KNN
+#Based on the stepwise selection, we use that sub-dataset for KNN
+newsubset01 <- mynew05[,c("RENEW","F2HOMFCY", "AGE", "MBRCOUNT","DISTANCE","EARLYFAREWELL",
+    "SHOP1YR","ECOMSHOP","GASSHOP", "MEDICALSHOP","GROCERYSHOP",
+    "M2EXCFLGE", "HOMEFCTYCHANGEN","RECENTMOVINGN","F2HOMRGN_BOFALSE", 
+    "F2HOMRGN_TEFALSE","F2HOMRGN_middleFALSE")]
+str(newsubset01)
+
+#load and partition the dataset: training (70%) and validation (30%) sets
+
+set.seed(105)
+indexknn<- sample(1:nrow(newsubset01),size=nrow(newsubset01)*0.7,replace = FALSE) 
+train_knn<- newsubset01[indexknn,] # 70% training data
+test_knn<- newsubset01[-indexknn,]
+
+#create the separate dataframe
+train_knn_pl<- newsubset01[indexknn,1]
+
+# initialize normalized training, validation data, complete data frames to originals
+train.norm.df <- train_knn
+valid.norm.df <- test_knn
+
+# use preProcess() from the caret package to normalize features
+norm.values <- preProcess(train_knn[, -1], method=c("center", "scale"))
+
+train.norm.df[, -1] <- predict(norm.values, train_knn[, -1])
+valid.norm.df[, -1] <- predict(norm.values, test_knn[, -1])
+
+```
+
+```{r}
+#KNN
+#compute knn for different k on validation to find the best k
+# initialize a data frame with two columns: k, and accuracy
+library(class)
+set.seed(105)
+cl <- train_knn_pl
+
+i=1                          
+k.optm=1                     
+for (i in 30:60){ 
+    knn.mod <-  knn(train=train.norm.df[,-1], test=valid.norm.df[, -1], cl, k=i)
+    k.optm[i] <- 100 * sum(knn.mod == test_knn$RENEW)/NROW(test_knn$RENEW)
+    k=i  
+    cat(k,'=',k.optm[i],'\n')
+}
+
+```
+
+
+```{r}
+library(FNN)
+set.seed(105)
+cl <- train_knn_pl
+#the best k=53, with the highest accuracy
+knn.55 <- knn(train=train.norm.df[,-1], test=valid.norm.df[, -1], cl, k=55)
+#show the confusion matrix for the validation data
+library(caret)
+caret::confusionMatrix(knn.55,valid.norm.df$RENEW)
+#accuracy=0.6932
+```
+
+
+
+```{r}
+#look at the ROC curve and the AUC value
+library(ROCR)
+pr <- prediction(as.numeric(knn.55), valid.norm.df$RENEW)
+# plotting ROC curve
+prf <- performance(pr, measure = "tpr", x.measure = "fpr")
+plot(prf,main = "ROC Curve",col = 2,lwd = 2)
+abline(a = 0,b = 1,lwd = 2,lty = 3,col = "black")
+
+# AUC value
+#AUC stands for "Area under the ROC Curve
+auc <- performance(pr, measure = "auc")
+auc <- auc@y.values[[1]]
+auc
+#auc=0.6826
+```
+
+
+```{r}
+#SVM
+##build model: radial kernel, default params
+##Non-linear boundary
+library(e1071)
+set.seed(105)
+svm_model <- svm(RENEW ~., data=mytrain_data, method="C-classification", kernel="radial")
+
+```
+
+
+```{r}
+#print params
+svm_model$cost
+svm_model$gamma
+
+# prediction
+pred_test <-predict(svm_model,newdata = mytest_data)
+caret::confusionMatrix(pred_test, mytest_data$RENEW)
+#accuracy= 0.7159
+```
+
+
+
+```{r}
+#look at the ROC curve and the AUC value
+library(ROCR)
+pr <- prediction(as.numeric(pred_test), mytest_data$RENEW)
+# plotting ROC curve
+prf <- performance(pr, measure = "tpr", x.measure = "fpr")
+plot(prf,main = "ROC Curve",col = 2,lwd = 2)
+abline(a = 0,b = 1,lwd = 2,lty = 3,col = "black")
+
+# AUC value
+#AUC stands for "Area under the ROC Curve
+auc <- performance(pr, measure = "auc")
+auc <- auc@y.values[[1]]
+auc
+#auc=0.7078
+```
+
+
+```{r}
+#Based on the DT importance, we use that sub-dataset of 10 features for RF
+ #accuracy=0.7511
+```
+
+
+```{r}
+#Based on the stepwise selection result, we use that sub-dataset of 10 features for RF
+#set up the traing and testing dataset
+set.seed(500)
+index <- createDataPartition(newsubset01$RENEW, p = 0.7, list = FALSE)
+mytrain_data <- newsubset01[index, ]
+mytest_data  <- newsubset01[-index, ]
+
+table(mytrain_data$RENEW)
+table(mytest_data$RENEW)
+```
+
+
+```{r}
+#build the model
+rfModel <- randomForest(RENEW ~., data=mytrain_data)
+
+#We use this plot to help us determine the number of trees
+plot(rfModel)
+summary(rfModel)
+print(rfModel)
+
+## to look at variable importance
+varImpPlot(rfModel,sort=T, n.var = 10, main = 'Top 10 Feature Importance') 
+
+#prediction 
+pred_rf <- predict(rfModel, newdata = mytest_data)
+pred_prob <- predict(rfModel, newdata = mytest_data,type="prob")
+
+#confusion matrix for prediction
+caret::confusionMatrix(pred_rf,mytest_data$RENEW)
+#accuracy=0.7544
+```
+
+
+```{r}
+#look at the ROC curve and the AUC value
+library(ROCR)
+pr <- prediction(pred_prob[,2], mytest_data$RENEW)
+# plotting ROC curve
+prf <- performance(pr, measure = "tpr", x.measure = "fpr")
+plot(prf,main = "ROC Curve",col = 2,lwd = 2)
+abline(a = 0,b = 1,lwd = 2,lty = 3,col = "black")
+
+# AUC value
+#AUC stands for "Area under the ROC Curve
+auc <- performance(pr, measure = "auc")
+auc <- auc@y.values[[1]]
+auc
+#auc=0.8336
+```
+
+
+```{r}
+#tune the model
+a <- mytrain_data[, -1] 
+b <- mytrain_data$RENEW
+
+t <- tuneRF(a, b, stepFactor = 0.5, plot = TRUE,
+            ntreeTry =300, trace = TRUE, improve = 0.05)
+
+
+##m(try)=4 when tree=180 #accuracy=0.7525 OOB error = 25%
+##m(try)=4 when tree=190 #accuracy=0.7525 OOB error = 25%
+##m(try)=4 when tree=200 #accuracy=0.7523 OOB error = 24.88%
+##m(try)=4 when tree=300 #accuracy=0.7531 OOB error = 24.82%
+##m(try)=4 when tree=350 #accuracy=0.753 OOB error = 24.8%
+
+```
+
+```{r}
+#run the Random Forest model after tuning
+set.seed(100)
+rfModel_new <- randomForest(RENEW ~., data=mytrain_data, ntree = 300,
+                            mtry = 4, importance = TRUE)
+print(rfModel_new)
+plot(rfModel_new)
+summary(rfModel_new)
+
+```
+
+```{r}
+#prediction 
+pred_rf <- predict(rfModel_new, newdata = mytest_data)
+pred_prob <- predict(rfModel_new, newdata = mytest_data,type="prob")
+
+#confusion matrix for prediction
+caret::confusionMatrix(pred_rf,mytest_data$RENEW)
+
+varImpPlot(rfModel_new, sort=T, n.var = 10, main = 'Top 10 Feature Importance')
+```
+
+```{r}
+#look at the ROC curve and the AUC value
+library(ROCR)
+pr <- prediction(pred_prob[,2], mytest_data$RENEW)
+# plotting ROC curve
+prf <- performance(pr, measure = "tpr", x.measure = "fpr")
+plot(prf,main = "ROC Curve",col = 2,lwd = 2)
+abline(a = 0,b = 1,lwd = 2,lty = 3,col = "black")
+
+# AUC value
+#AUC stands for "Area under the ROC Curve
+auc <- performance(pr, measure = "auc")
+auc <- auc@y.values[[1]]
+auc
+#auc=0.832
+```

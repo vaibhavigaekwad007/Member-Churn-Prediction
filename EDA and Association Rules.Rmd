@@ -1,0 +1,509 @@
+---
+title: "DM_EDA+Associaton Rules"
+author: "Group 5"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+
+```{r}
+#load the packages
+library(readr)
+library(readxl)
+library(tidyverse)
+library(caret)
+library(data.table)
+library(leaps)
+library(MASS)
+library(corrplot)
+library(gridExtra)
+library(formattable)
+library(outliers)
+library(ggplot2) 
+library(cowplot)
+library(arules)
+library(arulesViz)
+```
+
+```{r}
+#upload the target dataset
+churn_data <- read_csv("~/Desktop/MBRChurnModel_FirstYear_MSK (1).csv")
+
+#check the missing values
+sapply(churn_data, function(x) sum(is.na(x)))
+
+#drop the irrelavant column (customer No.)
+churn_data$A2ACCIPK <- NULL
+
+head(churn_data)
+str(churn_data)
+
+
+
+```
+
+1. Binary classificatin outcome: 
+Renew(Y or N) -----chr
+(initial 21 features)
+
+2. A2ACCIPK: membership number
+3. A2ACCTYP: account type: gold star/regular
+4. M2EXCFLG: exclusive membership/ non-exclusive ---chr
+5.B2BUSTYP: if members B2B or not: 0=No; Y=yes
+6.F2HOMRGN: region---chr
+7.F2HOMFCY:warehouse number
+8. AGE
+9.TENURE: Number of months the customer has stayed
+10.ZIPCODE: customer zipcode
+11.MERCOUNT: number of cards hold
+12.DISTANCE: miles to the warehouse
+13.EARLYFAREWELL: number of days not shop
+14.HOMEFCTYCHANGE: does customer change the home warehouse they are used to go?----chr (yes or no)
+15.RECENTMOVING: recent move ---chr (yes or no)
+16.SHOP1YR:shopping times in 1 year
+17.SHOP6M: shopping times in 6 months
+18.SHOP3M: shopping times in 3 months
+19.ECOMSHOP: e-comme shopping % ( shopping kinds)
+20.GASSHOP:gas shopping%
+21.MEDICALSHOP: medical shopping%
+21.GROCERYSHOP:grocery shopping%
+
+
+```{r}
+#Correlation between numeric variables
+numeric_var <- sapply(churn_data, is.numeric)
+matrix <- cor(churn_data[,numeric_var])
+
+corrplot(matrix,main="\n\nCorrelation Plot for Numerical Variables", method="number")
+```
+From the correlation plot, we can see that:
+B2B and A2A are correlated;(0.86)
+Shop1yr and shop6m are correlated;(0.96)
+Shop1yr and shop3m are correlated ;(0.93)
+shop6m and shop3m are correlated;(0.97)
+
+```{r}
+#get the numerical variables
+numeric_var <- sapply(churn_data, is.numeric)
+
+#get the mean, max, min for numerical varianles columns from the dataframe
+colMeans(churn_data[numeric_var])
+sapply(churn_data[numeric_var],max)
+sapply(churn_data[numeric_var],min)
+
+```
+
+
+```{r}
+#deal with the outliers
+#univariate outliers: (SHOPIYR;SHOP6M;SHOP3M)
+p1 <- ggplot(churn_data, aes(x = "SHOP1YR", y = SHOP1YR)) +
+    geom_boxplot()
+
+p2<-ggplot(churn_data, aes(x = "SHOP6M", y = SHOP6M)) +
+    geom_boxplot()
+
+p3 <- ggplot(churn_data, aes(x = "SHOP3M", y = SHOP3M)) +
+    geom_boxplot()
+grid.arrange(p1,p2,p3,ncol=2)
+
+```
+In general, an outlier is usually defined as an observation more than 3 standard deviations from the mean 
+
+
+```{r}
+#multivariate outliers: (SHOPIYR;SHOP6M;SHOP3M) VS (Region)
+p1 <- ggplot(churn_data, aes(x =F2HOMRGN,y =SHOP1YR)) +
+    geom_boxplot()+
+  xlab("region")+
+  ylab("Shopping times in 1 year")
+
+p2 <- ggplot(churn_data, aes( x=F2HOMRGN,y=SHOP6M)) +
+    geom_boxplot()+
+    xlab("Shopping times in 6 months")+
+     ylab("Region")
+
+p3 <- ggplot(churn_data, aes(x=F2HOMRGN,y=SHOP3M)) +
+    geom_boxplot()+
+    xlab("Region")+
+    ylab("Shopping times in 3 months")
+
+grid.arrange(p1,p2,p3,ncol=2)
+```
+
+One way to identify outliers is to determine which points have a z-score that's far from 0. 
+We can use the scores() function in the outliers package
+
+```{r}
+#identify which roes contain outliers (SHOP1YR)
+library(outliers)
+# get the z-scores for 
+outlier_scores_1YR <- scores(churn_data$SHOP1YR)
+
+#use threshold =3
+#it is "TRUE" if outlier_scores is greater than 3
+# it is false if outlier_scores is less than negative 3
+is_outlier1YR <- outlier_scores_1YR > 3 | outlier_scores_1YR < -3
+
+# add a column with info whether the refund_value is an outlier
+churn_data$is_outlier <- is_outlier1YR
+
+# create a dataframe with only outliers
+churn_outliers_1YR <- churn_data[outlier_scores_1YR > 3| outlier_scores_1YR < -3, ]
+str(churn_outliers_1YR)
+
+#Remove rows with outliers from churn dataset
+churn_clean1<- churn_data[churn_data$is_outlier== F, ]
+str(churn_clean1)
+
+```
+
+we removes outliers when:
+we don't have a lot of time to figure out why you have outliers
+we have a large amount of data without outliers
+we have outliers due to measurement or data entry errors
+
+```{r}
+#check the clean churn dataset
+p1 <- ggplot(churn_clean1, aes(x = "SHOP1YR", y = SHOP1YR)) +
+    geom_boxplot()
+p1
+
+p2<-ggplot(churn_clean1, aes(x = "SHOP6M", y = SHOP6M)) +
+    geom_boxplot()
+
+p3 <- ggplot(churn_clean1, aes(x = "SHOP3M", y = SHOP3M)) +
+    geom_boxplot()
+grid.arrange(p1,p2,p3,ncol=2)
+
+```
+column of shop3m still has outliers....
+
+```{r}
+#identify which roes contain outliers (SHOP3M)
+library(outliers)
+# get the z-scores for 
+outlier_scores_3m <- scores(churn_clean1$SHOP3M)
+
+#use threshold =3
+#it is "TRUE" if outlier_scores is greater than 3
+# it is false if outlier_scores is less than negative 3
+is_outlier3m <- outlier_scores_3m > 3 | outlier_scores_3m < -3
+
+# add a column with info whether the refund_value is an outlier
+churn_clean1$is_outlieraa <- is_outlier3m
+
+# create a dataframe with only outliers
+churn_outliers_3m <- churn_clean1[outlier_scores_3m > 3| outlier_scores_3m < -3, ]
+str(churn_outliers_3m)
+
+#Remove rows with outliers from churn dataset
+churn_clean2<- churn_clean1[churn_clean1$is_outlieraa== F, ]
+str(churn_clean2)
+
+```
+
+```{r}
+#check the clean churn dataset
+p1 <- ggplot(churn_clean2, aes(x = "SHOP1YR", y = SHOP1YR)) +
+    geom_boxplot()
+
+p2<-ggplot(churn_clean2, aes(x = "SHOP6M", y = SHOP6M)) +
+    geom_boxplot()
+
+p3 <- ggplot(churn_clean2, aes(x = "SHOP3M", y = SHOP3M)) +
+    geom_boxplot()
+grid.arrange(p1,p2,p3,ncol=2)
+
+```
+
+```{r}
+#check the clean churn dataset
+p1 <- ggplot(churn_clean2, aes(x =F2HOMRGN,y =SHOP1YR)) +
+    geom_boxplot()+
+  xlab("region")+
+  ylab("Shopping times in 1 year")
+
+p2 <- ggplot(churn_clean2, aes( x=F2HOMRGN,y=SHOP6M)) +
+    geom_boxplot()+
+    xlab("Shopping times in 6 months")+
+     ylab("Region")
+
+p3 <- ggplot(churn_clean2, aes(x=F2HOMRGN,y=SHOP3M)) +
+    geom_boxplot()+
+    xlab("Region")+
+    ylab("Shopping times in 3 months")
+
+grid.arrange(p1,p2,p3,ncol=2)
+
+```
+
+
+```{r}
+#use the churn_clean12 (no outliers in SHOP1YR and SHOP3m)
+
+New1 <- churn_clean2[,!names(churn_clean2) %in% c("is_outlier","is_outlieraa")]
+New11 <- mutate(New1, "TOTALECOM"=SHOP1YR*ECOMSHOP, "TOTALGAS"=SHOP1YR*GASSHOP , "TOTALMEDICAL"=SHOP1YR*MEDICALSHOP, "TOTALGROCER"=SHOP1YR*GROCERYSHOP) 
+head(New11)
+dim(New11)
+str(New11)
+
+New2 <- New11[,!names(New11) %in% c("ECOMSHOP","GASSHOP","MEDICALSHOP","GROCERYSHOP")]
+head(New2)
+dim(New2)
+str(New2)
+
+```
+
+
+**Exploratory Data Analysis**
+```{r}
+#Step 2 
+#data visualization for categorical variables
+library(ggplot2) 
+library(cowplot)
+
+#RENEW(Y or N) -----chr
+#M2EXCFLG:exclusive membership/ non-exclusive (Y or N) ---chr
+#F2HOMRGN: region---chr
+#HOMEFCTYCHANGE: does customer change the home warehouse they are used to go?----chr (Y or N)
+#RECENTMOVING: recent move ---chr (Y or N)
+
+p1 <- ggplot(data=New2, aes(x=M2EXCFLG))+
+  geom_bar(aes(y = 100*(..count..)/sum(..count..)), width = 0.3,fill="darkgreen") + 
+  ylab("Percentage") + ylim(0,100)+
+  xlab("Customer has an exclusive membership")+
+  coord_flip() + theme_minimal()
+
+p2 <- ggplot(data=New2, aes(x=F2HOMRGN))+
+  geom_bar(aes(y = 100*(..count..)/sum(..count..)), width = 0.3,fill="darkgreen") + 
+  ylab("Percentage") + ylim(0,30)+
+  xlab("Region")+
+  coord_flip() + theme_minimal()
+
+p3 <- ggplot(data=New2, aes(x=HOMEFCTYCHANGE))+
+  geom_bar(aes(y = 100*(..count..)/sum(..count..)), width = 0.3,fill="darkgreen") + 
+  ylab("Percentage") + ylim(0,100)+
+  xlab("Customer Changes Home")+
+  coord_flip() + theme_minimal()
+
+p4 <- ggplot(data=New2, aes(x=RECENTMOVING))+
+  geom_bar(aes(y = 100*(..count..)/sum(..count..)), width = 0.3,fill="darkgreen") + 
+  ylab("Percentage") + ylim(0,100)+ 
+  xlab("Customer Region")+
+  coord_flip() + theme_minimal()
+
+p5 <- ggplot(data=New2, aes(x=RENEW))+
+  geom_bar(aes(y = 100*(..count..)/sum(..count..)), width = 0.3,fill="darkgreen") + 
+  ylab("Percentage") + ylim(0,100)+ 
+  xlab("Customer Churn")+
+  coord_flip() + theme_minimal()
+
+#get the bar plots of categorical variables
+grid.arrange(p1, p2, p3, p4, p5)
+
+```
+
+
+ 
+```{r}
+#Step 2
+##data visualization for numerical variables
+
+shop1year <- ggplot(data=New2, aes(SHOP1YR)) + 
+  geom_histogram(fill="darkred") + 
+  geom_vline(aes(xintercept = mean(SHOP1YR)), linetype = "dashed")+
+  xlim(0,15000)
+  
+
+shop6m <- ggplot(data=New2, aes(SHOP6M)) + 
+  geom_histogram(fill="darkred") + 
+  geom_vline(aes(xintercept = mean(SHOP6M)), linetype = "dashed")+
+  xlim(0,10000)
+
+shop3m <- ggplot(data=New2, aes(SHOP3M)) + 
+  geom_histogram(fill="darkred") + 
+  geom_vline(aes(xintercept = mean(SHOP6M)), linetype = "dashed")+
+  xlim(0,5000)
+
+   
+grid.arrange(shop1year,shop6m,shop3m,ncol=2)
+
+```
+
+```{r}
+mean(New2$SHOP1YR)  
+mean(New2$SHOP6M)
+mean(New2$SHOP3M)
+```
+
+```{r}
+#MBRCOUNT: number of cards hold
+#DISTANCE: miles to the warehouse
+#EARLYFAREWELL: number of days not shop
+#TENURE: Number of months the customer has stayed
+
+
+p1 <- ggplot(data=New2, aes(MBRCOUNT)) + 
+  geom_histogram(fill="darkred") + 
+  geom_vline(aes(xintercept = mean(MBRCOUNT)), linetype = "dashed")
+
+p2 <- ggplot(data=New2, aes(DISTANCE)) + 
+  geom_histogram(fill="darkred") + 
+  geom_vline(aes(xintercept = mean(DISTANCE)), linetype = "dashed")
+
+p3 <- ggplot(data=New2, aes(EARLYFAREWELL)) + 
+  geom_histogram(fill="darkred") + 
+  geom_vline(aes(xintercept = mean(EARLYFAREWELL)), linetype = "dashed")
+
+
+p4 <- ggplot(data=New2, aes(TENURE)) + 
+  geom_histogram(fill="darkred") + 
+  geom_vline(aes(xintercept = mean(TENURE)), linetype = "dashed")
+
+grid.arrange(p1,p2,p3,p4,ncol=2)
+
+```
+
+**Association Rules**
+```{r}
+library(tidyverse)
+churn_data <- read_csv("~/Desktop/MBRChurnModel_FirstYear_MSK (1).csv")
+```
+
+```{r}
+library(data.table)
+setDT(churn_data)[AGE <1, agegroup := "0-1"]
+churn_data[AGE >0 & AGE <5, agegroup := "1-4"]
+churn_data[AGE >4 & AGE <10, agegroup := "5-9"]
+churn_data[AGE >9 & AGE <15, agegroup := "10-14"]
+churn_data[AGE >14 & AGE <20, agegroup := "15-19"]
+churn_data[AGE >19 & AGE <25, agegroup := "20-24"]
+churn_data[AGE >24 & AGE <30, agegroup := "25-29"]
+churn_data[AGE >29 & AGE <35, agegroup := "30-34"]
+churn_data[AGE >34 & AGE <40, agegroup := "35-39"]
+churn_data[AGE >39 & AGE <45, agegroup := "40-44"]
+churn_data[AGE >44 & AGE <50, agegroup := "45-49"]
+churn_data[AGE >49 & AGE <55, agegroup := "50-54"]
+churn_data[AGE >54 & AGE <60, agegroup := "55-59"]
+churn_data[AGE >59 & AGE <65, agegroup := "60-64"]
+churn_data[AGE >64 & AGE <70, agegroup := "65-69"]
+churn_data[AGE >69 & AGE <75, agegroup := "70-74"]
+churn_data[AGE >74 & AGE <80, agegroup := "75-79"]
+churn_data[AGE >79 & AGE <85, agegroup := "80-84"]
+churn_data[AGE >84, agegroup := "85+"]
+```
+
+
+```{r}
+churn_data$EARLYFAREWELL<- as.integer(churn_data$EARLYFAREWELL)
+setDT(churn_data)
+churn_data[EARLYFAREWELL >=0 & EARLYFAREWELL <60, earlygroup := "0 - 60"]
+churn_data[EARLYFAREWELL >=60  & EARLYFAREWELL <120, earlygroup := "61 - 120"]
+churn_data[EARLYFAREWELL >=120 & EARLYFAREWELL <180, earlygroup := "121 - 180"]
+churn_data[EARLYFAREWELL >=180 & EARLYFAREWELL <240, earlygroup := "181 - 240"]
+churn_data[EARLYFAREWELL >=240 & EARLYFAREWELL <300, earlygroup := "241 - 300"]
+churn_data[EARLYFAREWELL >=300 & EARLYFAREWELL <360, earlygroup := "301 - 360"]
+churn_data[EARLYFAREWELL >=360 & EARLYFAREWELL <420, earlygroup := "361 - 420"]
+```
+
+```{r}
+setDT(churn_data)[DISTANCE < 10, DISTANCEGroup := "Less then 10"]
+churn_data[DISTANCE >=10 & DISTANCE < 20, DISTANCEGroup := "10-20"]
+churn_data[DISTANCE >=20 & DISTANCE < 30, DISTANCEGroup := "20-30"]
+churn_data[DISTANCE >=30 & DISTANCE < 40, DISTANCEGroup := "30-40"]
+churn_data[DISTANCE >=40 & DISTANCE < 50, DISTANCEGroup := "40-50"]
+churn_data[DISTANCE >=50 & DISTANCE < 60, DISTANCEGroup := "50-60"]
+churn_data[DISTANCE >=60 & DISTANCE < 70, DISTANCEGroup := "60-70"]
+churn_data[DISTANCE >=70 & DISTANCE < 80, DISTANCEGroup := "70-80"]
+churn_data[DISTANCE >=80 & DISTANCE < 90, DISTANCEGroup := "80-90"]
+churn_data[DISTANCE >=90 & DISTANCE < 100, DISTANCEGroup := "90-100"]
+churn_data[DISTANCE >=100, DISTANCEGroup := "100+"]
+```
+
+
+```{r}
+setDT(churn_data)[SHOP1YR <1000, shop1YrGROUP := "0-1000"]
+churn_data[SHOP1YR >=1000 & SHOP1YR <5000, shop1YrGROUP := "1001-5000"]
+churn_data[SHOP1YR >=5000 & SHOP1YR <10000, shop1YrGROUP := "5001-10000"]
+churn_data[SHOP1YR >=10000 & SHOP1YR <50000, shop1YrGROUP := "10001-50000"]
+churn_data[SHOP1YR >=50000 & SHOP1YR <100000, shop1YrGROUP := "50001-100000"]
+churn_data[SHOP1YR >=100000 & SHOP1YR <200000, shop1YrGROUP := "100001-200000"]
+churn_data[SHOP1YR >=200000 & SHOP1YR <300000, shop1YrGROUP := "200001-300000"]
+churn_data[SHOP1YR >=300000 & SHOP1YR <400000, shop1YrGROUP := "30001-400000"]
+churn_data[SHOP1YR >=400000 & SHOP1YR <500000, shop1YrGROUP := "40001-500000"]
+churn_data[SHOP1YR >=600000 & SHOP1YR <700000, shop1YrGROUP := "60001-700000"]
+churn_data[SHOP1YR >=700000 & SHOP1YR <800000, shop1YrGROUP := "700001-800000"]
+churn_data[SHOP1YR >=800000 & SHOP1YR <900000, shop1YrGROUP := "800001-900000"]
+churn_data[SHOP1YR >=900000 & SHOP1YR <1000000, shop1YrGROUP := "900001-1000000"]
+churn_data[SHOP1YR >=1000000 & SHOP1YR<1100000, shop1YrGROUP := "1000001-1100000"]
+churn_data[SHOP1YR >=1100000 & SHOP1YR<1200000, shop1YrGROUP := "1100001-1200000"]
+churn_data[SHOP1YR >=1200000 & SHOP1YR<1300000, shop1YrGROUP := "1200001-1300000"]
+churn_data[SHOP1YR >=1300000 & SHOP1YR<1400000, shop1YrGROUP := "1300001-1400000"]
+churn_data[SHOP1YR >=1400000 & SHOP1YR<1500000, shop1YrGROUP := "1400001-1500000"]
+churn_data[SHOP1YR >=1500000 & SHOP1YR<1600000, shop1YrGROUP := "1500001-1600000"]
+churn_data[SHOP1YR >=1600000 & SHOP1YR<1700000, shop1YrGROUP := "1600001-1700000"]
+churn_data[SHOP1YR >=1700000 & SHOP1YR<1800000, shop1YrGROUP := "1700001-1800000"]
+churn_data[SHOP1YR >=1800000 & SHOP1YR<1900000, shop1YrGROUP := "1800001-1900000"]
+churn_data[SHOP1YR >=1900000, shop1YrGROUP := "1900001+"]
+```
+
+```{r}
+churn_data1 <- churn_data[,-c(2,8,12,13, 17:22)]
+```
+
+
+```{r}
+sapply(churn_data1, function(x) sum(is.na(x)))
+```
+
+```{r}
+churn_data1<- na.omit(churn_data1)
+```
+
+
+```{r}
+churn_data1[,1:16] <- lapply(churn_data1[,1:16], factor)
+```
+s
+```{r}
+str(churn_data)
+```
+
+Frequent Itemset Generation: Find all frequent item-sets with support >= pre-determined min_support count
+
+```{r}
+library(arules)
+library(arulesViz)
+NotR_rules <- apriori(data=churn_data1, parameter=list (supp=0.048,conf = 0.9), appearance = list (rhs='RENEW=N'))
+```
+
+Confidence(A=>B) = P(B|A) = P(A and B)/ P(A)
+
+Lift(A=>B = Support/(Supp(A)Supp(B))
+
+```{r}
+inspect(head(sort(NotR_rules, by = "count"), 15))
+```
+
+```{r}
+library(arules)
+library(arulesViz)
+RD_rules <- apriori(data=churn_data1, parameter=list (supp=0.002,conf = 0.827), appearance = list (rhs='shop1YrGROUP=1001-5000'))
+```
+
+```{r}
+inspect(head(sort(RD_rules, by = "confidence"), 20))
+```
+
+
+
